@@ -1,5 +1,7 @@
 const puppeteer = require('puppeteer');
 const fs = require('fs');
+const path = require('path');
+const axios = require('axios');
 
 (async () => {
   const browser = await puppeteer.launch({ headless: 'new' });
@@ -23,11 +25,13 @@ const fs = require('fs');
     // Create an array of objects with title, price, brand, and image URL
     const products = [];
     for (let i = 0; i < productTitles.length; i++) {
+      const imageUrl = productImages[i].getAttribute('data-src'); // Extract the data-src attribute for image URL
+
       products.push({
         title: productTitles[i].textContent.trim(),
         price: productPrices[i].textContent.trim(),
         brand: productBrand[i].textContent.trim(),
-        image: productImages[i].getAttribute('data-src'), // Extract the data-src attribute for image URL
+        image: imageUrl, // Save the image URL as a relative path
       });
     }
 
@@ -40,7 +44,55 @@ const fs = require('fs');
   // Save the JSON data to a text file
   fs.writeFileSync('productAllData.txt', jsonData);
 
-  console.log('Product data saved to productData.txt');
+  // Create a function to download images in batches
+  const downloadDir = 'images';
+  fs.mkdirSync(downloadDir, { recursive: true });
+
+  const maxRetries = 3; // Number of times to retry a failed request
+  const retryDelay = 2000; // Delay in milliseconds before retrying
+  const batchSize = 50; // Batch size for downloading images
+
+  async function downloadImagesInBatches(products) {
+    for (let i = 0; i < products.length; i += batchSize) {
+      const batch = products.slice(i, i + batchSize);
+      await Promise.all(batch.map(async (product) => {
+        const imageUrl = product.image;
+        const imageFileName = path.join(downloadDir, imageUrl.split('/').pop());
+        let retries = 0;
+
+        while (retries < maxRetries) {
+          try {
+            const response = await axios.get(imageUrl, { responseType: 'stream' });
+            response.data.pipe(fs.createWriteStream(imageFileName));
+
+            await new Promise((resolve) => {
+              response.data.on('end', resolve);
+            });
+
+            console.log(`Image downloaded for ${product.title}`);
+            break; // If successful, exit the retry loop
+          } catch (error) {
+            console.error(`Error downloading image for ${product.title}: ${error.message}`);
+            retries++;
+
+            if (retries < maxRetries) {
+              console.log(`Retrying in ${retryDelay / 1000} seconds...`);
+              await new Promise((resolve) => setTimeout(resolve, retryDelay));
+            } else {
+              console.error(`Max retries reached for ${product.title}. Skipping.`);
+              break; // If max retries reached, exit the retry loop
+            }
+          }
+        }
+      }));
+    }
+  }
+
+  // Call the function to download images in batches
+  await downloadImagesInBatches(productData);
+
+  console.log('Product data saved to productAllData.txt');
+  console.log('Images downloaded to the "images" directory.');
 
   await browser.close();
 })();
